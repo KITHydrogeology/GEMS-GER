@@ -11,6 +11,9 @@ This dataset is documented in the following publication:
 GEMS-GER: A machine learning benchmark dataset of long-term groundwater levels in Germany with meteorological forcings and site-specific environmental features* [Preprint].
 _Earth System Science Data Discussions._ [https://doi.org/DOI-einfügen](https://doi.org/DOI-einfügen)
 
+Contact: [marc.ohmer@kit.edu](marc.ohmer@kit.edu)
+
+
 ## Dataset
 
 The **GEMS-GER** dataset includes long-term groundwater level time series paired with meteorological forcing data and site-specific environmental features.
