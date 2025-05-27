@@ -13,18 +13,19 @@ _Earth System Science Data Discussions._ [https://doi.org/DOI-einfügen](https:/
 
 ## Dataset
 
-The dataset includes long-term groundwater level time series paired with meteorological forcing data and site-specific environmental features.
+The **GEMS-GER** dataset includes long-term groundwater level time series paired with meteorological forcing data and site-specific environmental features.
 
 The full dataset is hosted on Zenodo and can be accessed here:  
 [https://doi.org/10.5281/zenodo.1234567](https://doi.org/10.5281/zenodo.1234567)
 
 ## Purpose
 
-This repository contains preprocessing scripts and benchmarking models to analyze and predict groundwater levels using machine learning techniques.
+This repository provides exemplary preprocessing scripts and benchmarking models designed to analyze and predict groundwater levels using machine learning techniques. The included workflows operate on anonymized sample data and are intended to demonstrate the application of these methods rather than to serve as production-ready solutions.
+
 
 ## Preprocessing Pipeline
 
-The dataset requires careful cleaning and preparation. We provide four standalone Python scripts demonstrating the main preprocessing steps on an anonymized dummy dataset included in the `/data` folder:
+We provide four standalone Python scripts demonstrating the main preprocessing steps on an anonymized dummy dataset included in the `/data` folder:
 
 1. **Filter Data Gaps**  
    Removes time series with excessive missing values or long consecutive gaps.
