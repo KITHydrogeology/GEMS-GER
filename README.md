@@ -8,9 +8,8 @@
 This dataset is documented in the following publication:  
 
 *Ohmer, M., Liesch, T., Habbel, B., Heudorfer, B., Gomez Ospina, M., Clos, P., Nölscher, M., & Broda, S. (2025).  
-GEMS-GER: A machine learning benchmark dataset of long-term groundwater levels in Germany with meteorological forcings and site-specific environmental features* [Preprint].  
-_Earth System Science Data Discussions._  
-[https://doi.org/DOI-einfügen](https://doi.org/DOI-einfügen)
+GEMS-GER: A machine learning benchmark dataset of long-term groundwater levels in Germany with meteorological forcings and site-specific environmental features* [Preprint].
+_Earth System Science Data Discussions._ [https://doi.org/DOI-einfügen](https://doi.org/DOI-einfügen)
 
 ## Dataset
 
