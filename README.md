@@ -1,6 +1,6 @@
 # GEMS-GER
 
-![GEMS-GER](GEMS.png)
+<img src="./docs/GEMS.png" width="300" />
 
 **GEMS-GER** provides code and benchmark models for the publicly available groundwater monitoring dataset in Germany.
 
