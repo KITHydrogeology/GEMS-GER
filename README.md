@@ -1,6 +1,6 @@
 # GEMS-GER
 
-<img src="./docs/GEMS.png" width="300" />
+<img src="./docs/GEMS.png" width="600" />
 
 **GEMS-GER** provides code and benchmark models for the publicly available groundwater monitoring dataset in Germany.
 
