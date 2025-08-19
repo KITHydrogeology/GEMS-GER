@@ -15,5 +15,5 @@ This directory contains standalone Python scripts for the benchmark models.
 ## How to Run
 
 All scripts are standalone and require Python 3 with a few common scientific libraries. Each script uses command-line arguments for input/output paths. Please not that for running the scripts, you need the dataset published on Zenodo:  
-[https://doi.org/10.5281/zenodo.1234567](https://doi.org/10.5281/zenodo.1234567)
+[https://doi.org/10.5281/zenodo.1234567](https://doi.org/10.5281/zenodo.15530171)
 
