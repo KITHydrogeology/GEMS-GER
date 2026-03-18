@@ -9,7 +9,7 @@ This dataset is documented in the following publication:
 
 *Ohmer, M., Liesch, T., Habbel, B., Heudorfer, B., Gomez Ospina, M., Clos, P., Nölscher, M., & Broda, S. (2025).  
 GEMS-GER: A machine learning benchmark dataset of long-term groundwater levels in Germany with meteorological forcings and site-specific environmental features* [Preprint].
-_Earth System Science Data Discussions._ [https://doi.org/DOI-einfügen](https://doi.org/DOI-einfügen)
+_Earth System Science Data Discussions._ [https://doi.org/10.5281/zenodo.15530171](https://doi.org/10.5281/zenodo.15530171)
 
 Contact: [marc.ohmer@kit.edu](marc.ohmer@kit.edu)
 
@@ -19,7 +19,7 @@ Contact: [marc.ohmer@kit.edu](marc.ohmer@kit.edu)
 The **GEMS-GER** dataset includes long-term groundwater level time series paired with meteorological forcing data and site-specific environmental features.
 
 The full dataset is hosted on Zenodo and can be accessed here:  
-[https://doi.org/10.5281/zenodo.1234567](https://doi.org/10.5281/zenodo.1234567)
+[https://doi.org/10.5281/zenodo.15530171](https://doi.org/10.5281/zenodo.15530171)
 
 ## Purpose
 
