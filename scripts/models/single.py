@@ -28,14 +28,15 @@ pth_out = "./results_single/"
 #%% functions
 
 def split_data(data, seq_length, start, val_start, test_start, end):
-    Train = data[(data.index >= start) & (data.index <= val_start)]
+    Train = data[(data.index >= start) & (data.index < val_start)]
     
-    Val = data[(data.index >= val_start) & (data.index <= test_start)]
-    Val_ext = pd.concat([Val.iloc[-seq_length:], Val], axis=0) 
+    Val = data[(data.index >= val_start) & (data.index < test_start)]
+    Val_ext = pd.concat([Train.iloc[-seq_length:], Val], axis=0)
     
     Test = data[(data.index >= test_start) & (data.index <= end)]
-    Test_ext = pd.concat([Val.iloc[-seq_length:], Test], axis=0) 
-    return  Train, Val, Val_ext, Test, Test_ext
+    Test_ext = pd.concat([Val.iloc[-seq_length:], Test], axis=0)
+    
+    return Train, Val, Val_ext, Test, Test_ext
 
 def scale_data(Train, Val, Val_ext,Test, Test_ext): 
     scaler = StandardScaler().fit(Train)
