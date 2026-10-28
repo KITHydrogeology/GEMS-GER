@@ -1,35 +1,95 @@
 # -*- coding: utf-8 -*-
+"""Global dynonly LSTM benchmark; original train+validation scaling (1991-2012).
+
+Original model functions/architecture: Tanja Liesch, GEMS-GER.
+Standalone 20-member update: documented prefix-stable seeds, original scaling,
+per-station inverse transformation and unrounded pointwise median exports.
+Complete runs use a new output folder; no automatic resume is performed.
+No local project modules, configuration files or external seed files are required.
 """
-@author: Tanja Liesch
-"""
-
-#%% paths and packages
-
-import warnings
-warnings.filterwarnings('ignore')
-
 import os
+import sys
+
+# Set before importing TensorFlow, including for direct command-line execution.
+_ENV = {"PYTHONHASHSEED":"0", "TF_DETERMINISTIC_OPS":"1", "CUBLAS_WORKSPACE_CONFIG":":4096:8",
+        "TF_NUM_INTRAOP_THREADS":"8", "TF_NUM_INTEROP_THREADS":"2", "PYTHONUNBUFFERED":"1", "PYTHONUTF8":"1"}
+if __name__ == "__main__" and any(os.environ.get(k) != v for k,v in _ENV.items()):
+    environment = os.environ.copy()
+    environment.update(_ENV)
+    os.execve(sys.executable, [sys.executable]+sys.argv, environment)
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+import argparse
+import gc
+import gzip
+import hashlib
+import io
+from pathlib import Path
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-#from keras import backend as K
-from keras.callbacks import EarlyStopping
-from scipy import stats
-from datetime import datetime
-#import matplotlib.pyplot as plt # auskommentiert für Cluster
 from sklearn.preprocessing import StandardScaler
-import copy
-import tensorflow.keras.backend as K
-import gc
+import tensorflow as tf
+import keras as ks
+from tensorflow.keras.utils import Sequence
+from tensorflow.keras import backend as K
 
+# Reproducibility and output helpers; no external project modules are required.
+POLICY = "GEMS-GER-single-SHA256-v1"
+DEFAULT_MASTER_SEED = 20261020
 
-pth_dt_dyn = "./data/dynamic"
-pth_out = "./results_dynonly/"   
+def configure_runtime():
+    if tf.__version__ != "2.10.1" or ks.__version__ != "2.10.0":
+        raise RuntimeError("Reference runtime: TensorFlow 2.10.1 and Keras 2.10.0")
+    for device in tf.config.list_physical_devices("GPU"):
+        tf.config.experimental.set_memory_growth(device, True)
+    tf.config.threading.set_intra_op_parallelism_threads(8)
+    tf.config.threading.set_inter_op_parallelism_threads(2)
+    tf.config.experimental.enable_op_determinism()
 
+def export_medians(output, column, ids, matrices):
+    """Write one compressed CSV per model, without rounding predictions."""
+    path = output / f"median_predictions_{column.removesuffix('_median')}.csv.gz"
+    temporary = path.with_suffix(".pending.gz")
+    dates = pd.date_range("2013-01-07", "2022-12-26", freq="W-MON").strftime("%Y-%m-%d")
+    with temporary.open("wb") as raw:
+        with gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as compressed:
+            with io.TextIOWrapper(compressed, encoding="utf-8", newline="") as stream:
+                for index, identifier in enumerate(sorted(ids, key=lambda v: int(v.removeprefix("MW_")))):
+                    matrix = matrices(identifier)
+                    if matrix.ndim != 2 or matrix.shape[0] != 521 or not np.isfinite(matrix).all():
+                        raise ValueError("Wrong prediction shape: " + identifier)
+                    frame = pd.DataFrame({"ID": identifier, "Date": dates, column: np.median(matrix, axis=1)})
+                    frame.to_csv(stream, index=False, header=index==0, float_format="%.17g", lineterminator="\n")
+    os.replace(temporary, path)
+    print("Median predictions:", path, flush=True)
+    return path
 
-#%% functions
+def seed_records(count, master_seed=DEFAULT_MASTER_SEED):
+    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 100000:
+        raise ValueError("Die Mitgliederzahl muss eine ganze Zahl zwischen 1 und 100000 sein.")
+    if isinstance(master_seed, bool) or not isinstance(master_seed, int) or master_seed < 0:
+        raise ValueError("master_seed muss eine nichtnegative ganze Zahl sein.")
+    records, used = [], set()
+    for number in range(1, count + 1):
+        collision = 0
+        while True:
+            key = f"{POLICY}:{master_seed}:{number}:{collision}".encode("ascii")
+            # Keep 42+ini in NumPy/TensorFlow's positive signed 32-bit range.
+            actual = 43 + int.from_bytes(hashlib.sha256(key).digest()[:8], "big") % (2**31 - 43)
+            if actual not in used:
+                break
+            collision += 1
+        used.add(actual)
+        records.append({"member": number, "actual_seed": actual,
+                        "github_ini": actual - 42, "collision_counter": collision})
+    return records
 
-# ----- sequentialize  --------------------
+n_steps_in = 52
+HPi_lstm_size = 128
+HPi_dropout =  0.3
+HPi_targetlr =  0.001
+HPi_epochs = 20
+HPi_batchsize = 512
 
 def make_sequences(data, n_steps_in, n_input):
     #make the data sequential
@@ -48,8 +108,6 @@ def make_sequences(data, n_steps_in, n_input):
         X.append(seq_x)
         Y.append(seq_y)
     return np.array(X), np.array(Y)
-    
-# ----- learning rate scheduling  --------------------
 
 class CustomLearningRateScheduler(tf.keras.callbacks.Callback):
     """Learning rate scheduler implementing linear warmup and cosine decay."""
@@ -91,20 +149,11 @@ class CustomLearningRateScheduler(tf.keras.callbacks.Callback):
 
         learning_rate = np.where(global_step < self.warmup_steps, warmup_lr, learning_rate)
         return learning_rate
-    
-
-
-# ----- clear memory  --------------------
 
 class ClearMemory(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         K.clear_session()
         gc.collect()
-        
-        
-# ----- data generator  --------------------
-        
-from tensorflow.keras.utils import Sequence
 
 class DataGenerator(Sequence):
     def __init__(self, X_dyn, X_stat, y, batch_size, shuffle=True):
@@ -134,290 +183,178 @@ class DataGenerator(Sequence):
         if self.shuffle:
             np.random.shuffle(self.indices)
 
-        
-# ----- BatchProgressCallback  --------------------
-
-from keras.callbacks import Callback
-
-class BatchProgressCallback(Callback):
-    def on_train_batch_end(self, batch, logs=None):
-        print(f"Batch {batch + 1} processed. Loss: {logs.get('loss'):.4f}")
-
-    def on_epoch_begin(self, epoch, logs=None):
-        print(f"\nStarting Epoch {epoch + 1}...\n")
-        
-
-
-
-#%% load time series data
-
-#-----------------------------------
-
-# list dynamic time series data files
-dt_list_files = os.listdir(pth_dt_dyn)
-temp = [i for i,sublist in enumerate(dt_list_files) if '.csv' in sublist]
-dt_list_files = [dt_list_files[i] for i in temp]
-del temp
-
-# load dynamic time series
-dt_list_dyn = list()
-for i in range(len(dt_list_files)):
-    temp = pd.read_csv(pth_dt_dyn + "/" + dt_list_files[i], 
-                       parse_dates=[0], index_col=0, dayfirst = True, decimal = '.', sep=',')
-    dt_list_dyn.append(temp)
-del temp
-
-# get ID names
-dt_list_names = [item[:-4] for item in dt_list_files]
-
-#-----------------------------------
-
-
-# save IDs of remaining stations
-pd.DataFrame({"ID": dt_list_names}).to_csv("./data/IDremainig.csv", sep = ";")
-
-
-#-----------------------------------
-
-
-#%% Model - Prepare Inputs and Hyperparameters
-
-HP_seeds = [171, 206, 380, 471, 570, 624, 643, 778, 808, 973]
-
-# Hyperparameters
-n_steps_in = 52
-HPi_lstm_size = 128
-HPi_dropout =  0.3
-HPi_targetlr =  0.001
-HPi_epochs = 20
-HPi_batchsize = 512
-
-
-for ii in range(len(HP_seeds)):
-    
-    HPi_seed = HP_seeds[ii]
-    
-    # create folder for outputs
-    pth_out_i = pth_out+'/run'+str(HPi_seed)
-    os.mkdir(pth_out_i)
-    
-    
-    #% Data preprocessing
-    
-    #Initialize containers
-    IDlen = list()
-    datafull = list()
-    scalers = list()
-    scalers_y = list()
-    X_train,Y_train = list(), list()
-    X_stop,Y_stop = list(), list()
-    X_test,Y_test = list(), list()
-    X_train_stat, X_stop_stat, X_test_stat = list(),list(),list()
-    
-    # Define split dates
-    date_start_stop = pd.to_datetime("2008-01-01", format = "%Y-%m-%d")
-    date_start_test = pd.to_datetime("2013-01-01", format = "%Y-%m-%d")
-    
-    for i in range(len(dt_list_files)):
-        
-        # merge all input data
-        tempdata = copy.deepcopy(dt_list_dyn[i])
-        
-        tempdata["ID"] = i
-        tempdata.reset_index(inplace=True)
-        tempdata.rename(columns={"index": "Date"}, inplace=True)
-        tempdata["Date"] = pd.to_datetime(tempdata["Date"])
-        tempdata.set_index('Date', inplace=True)
-        
-        tempdata.drop(['GWL_flag'], axis=1, inplace=True)
-        tempdata = tempdata[[col for col in tempdata.columns if col != 'GWL'] + ['GWL']]
-        
-        # save original data for score calculations later on 
-        datafull.append(tempdata)
-        
-        # fit scalers (on train+stop data) and transform (on full) data
-        scalers.append(StandardScaler().fit(tempdata[(tempdata.index < date_start_test)]))
-        scalers_y.append(StandardScaler().fit(pd.DataFrame(tempdata[(tempdata.index < date_start_test)]["GWL"])))
-        tempdata_n = scalers[i].transform(tempdata)
-        
-        # Split data
-        tempdata_n_train = tempdata_n[(tempdata.index < date_start_stop)]
-        tempdata_n_stop = tempdata_n[(tempdata.index >= date_start_stop) & (tempdata.index < date_start_test)]
-        tempdata_n_test = tempdata_n[(tempdata.index >= date_start_test)] 
-        
-        # ID tracker: Save length of test set to identify individual Mst after modelfit
-        IDlen.append(np.repeat(i,len(tempdata_n_test)))
-        
-        # extend stop + Testdata to be able to fill sequence later
-        tempdata_n_stop_ext = np.concatenate([tempdata_n_train[-n_steps_in:], tempdata_n_stop], axis=0)
-        tempdata_n_test_ext = np.concatenate([tempdata_n_stop[-n_steps_in:], tempdata_n_test], axis=0)
-        
-        # sequentialize data and add static features
-        temp_x, temp_y = make_sequences(np.asarray(tempdata_n_train), n_steps_in, n_input = 15)
-        X_train.append(temp_x); Y_train.append(temp_y[:,1])
-        
-        temp_x, temp_y = make_sequences(np.asarray(tempdata_n_stop_ext), n_steps_in, n_input = 15)
-        X_stop.append(temp_x); Y_stop.append(temp_y[:,1])
-        
-        temp_x, temp_y = make_sequences(np.asarray(tempdata_n_test_ext), n_steps_in, n_input = 15)
-        X_test.append(temp_x); Y_test.append(temp_y[:,1])
-        
-    
-    
-    # Final merge
-    X_train = np.concatenate(X_train)
-    Y_train = np.concatenate(Y_train)
-    X_stop = np.concatenate(X_stop)
-    Y_stop = np.concatenate(Y_stop)
-    X_test = np.concatenate(X_test)
-    Y_test = np.concatenate(Y_test)
-    IDlen = np.concatenate(IDlen)
-    datafull = pd.concat(datafull)
-    datafullwide = pd.pivot(datafull.drop(['HYRAS_pr','HYRAS_tas','HYRAS_tasmax',
-                                           'HYRAS_tasmin','HYRAS_hurs', 'DWD_evapo_p',
-                                           'DWD_evapo_r','DWD_evapo_fao','DWD_soil_moist',
-                                           'DWD_soil_temp5cm','ERA5_sro','ERA5_ssro',
-                                           'ERA5_sdwe', 'ERA5_sm','ERA5_sf'
-                                           ], axis = 1), columns = "ID")
-    
-    
-    #% Modelling
-    
-    #-----------------------------    
-    # Model
-    #-----------------------------
-    
-    #take time
-    now1 = datetime.now()
-    
-    # set seed
-    np.random.seed(HPi_seed)
-    tf.random.set_seed(HPi_seed)
-    
-    # Callbacks
-    model_es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5, restore_best_weights=True)
-    model_mc = tf.keras.callbacks.ModelCheckpoint(filepath=pth_out_i+'/model.keras', 
-                                                  save_best_only=True)
-    
-    warmup_steps = 3  # Number of warmup steps
-    total_steps = 20  # Total training steps
-    target_lr = 0.001  # Peak learning rate  
-    lr_callback = CustomLearningRateScheduler(warmup_steps, total_steps, target_lr=target_lr)
-          
-
-    # Input layers for dynamic and static model strands
+def build_model(X_train, X_train_stat=None):
     model_dyn_in = tf.keras.Input(shape=(n_steps_in, X_train.shape[2]))
-    
-    # Dynamic model strand
-    model_dyn = tf.keras.layers.LSTM(HPi_lstm_size)(model_dyn_in) #, activation='relu'
+    model_dyn = tf.keras.layers.LSTM(HPi_lstm_size)(model_dyn_in)
     model_dyn = tf.keras.layers.Dropout(HPi_dropout)(model_dyn)
-    
-    # Define output layer for predictions
     model_output = tf.keras.layers.Dense(units=1, activation='linear', dtype=tf.float32)(model_dyn)
-    
-    # Define model
     model = tf.keras.Model(inputs=[model_dyn_in], outputs=model_output)
-    
-    # Compile model with appropriate loss function and optimizer
     optimizer =  tf.keras.optimizers.Adam(epsilon = 0.0001)
     model.compile(loss='mse', optimizer=optimizer)
+    if model.count_params() != 73857:
+        raise ValueError('Unexpected global architecture')
+    return model
 
+FEATURES = [
+    "HYRAS_pr", "HYRAS_tas", "HYRAS_tasmax", "HYRAS_tasmin", "HYRAS_hurs",
+    "DWD_evapo_p", "DWD_evapo_r", "DWD_evapo_fao", "DWD_soil_moist",
+    "DWD_soil_temp5cm", "ERA5_sro", "ERA5_ssro", "ERA5_sdwe", "ERA5_sm", "ERA5_sf",
+]
+LENGTH = 52
+DATES = pd.date_range("1991-01-07", "2022-12-31", freq="W-MON")
+SPLITS = {"train": (52, 887), "validation": (887, 1148), "test": (1148, 1669)}
 
-    # Instantiate data generators
-    train_generator = DataGenerator(X_train, X_train_stat, Y_train, HPi_batchsize, shuffle=True)
-    val_generator = DataGenerator(X_stop, X_stop_stat, Y_stop, HPi_batchsize, shuffle=False)
-    
-    # Use fit with generators
-    model_history = model.fit(train_generator,
-                              validation_data=val_generator,
-                              epochs=HPi_epochs, verbose=1, 
-                              callbacks=[model_es, model_mc, lr_callback,
-                              BatchProgressCallback(),
-                              ClearMemory()])
-        
-     
-    # take time
-    now2 = datetime.now()
-    timetaken = round((now2-now1).total_seconds())/60
-    print('\n timetaken = '+str(timetaken)+'\n')
-    
+def load_station(path):
+    frame = pd.read_csv(path, parse_dates=[0], index_col=0, dayfirst=True, decimal=".", sep=",")
+    frame.index = pd.to_datetime(frame.index)
+    if list(frame.columns) != ["GWL"] + FEATURES + ["GWL_flag"]:
+        raise ValueError(f"Unerwartete Spalten/Reihenfolge: {path}")
+    if not frame.index.equals(DATES):
+        raise ValueError(f"Unvollstaendige/doppelte/falsche Wochendaten: {path}")
+    flags = frame["GWL_flag"].astype(str).str.lower()
+    if not flags.isin(["true", "false"]).all():
+        raise ValueError(f"Unerwartete GWL_flag: {path}")
+    data = frame[FEATURES + ["GWL"]]
+    if not np.isfinite(data.to_numpy(dtype=np.float64)).all():
+        raise ValueError(f"Fehlende/nichtendliche Werte: {path}")
+    return data, flags.eq("true").to_numpy()
 
-    # predict - with saved model checkpoint
-    loaded_model = tf.keras.models.load_model(pth_out_i+'/model.keras')
-    sim_n = loaded_model.predict([X_test, X_test_stat])
+def standardize_station(data):
+    """Both fits use 1148 original train+validation weeks; test data never enter the fit."""
+    train = data.loc[data.index < "2013-01-01"]
+    if len(train) != 1148 or list(data.columns) != FEATURES + ["GWL"]:
+        raise ValueError("Falscher Trainingszeitraum oder Zielspaltenposition.")
+    scaler_x = StandardScaler().fit(train)
+    scaler_y = StandardScaler().fit(train[["GWL"]])
+    normalized = scaler_x.transform(data)
+    np.testing.assert_array_equal(normalized[:, 15], scaler_y.transform(data[["GWL"]])[:, 0])
+    np.testing.assert_allclose(scaler_y.inverse_transform(normalized[:, 15:16])[:, 0],
+                               data["GWL"].to_numpy(), rtol=1e-13, atol=1e-12)
+    return normalized, scaler_y
+
+class LazyWindowArray:
+    """Read-only facade for the exact original, station-major X concatenation."""
+    def __init__(self, normalized, split):
+        self.normalized = normalized
+        self.start, self.stop = SPLITS[split]
+        self.per_station = self.stop - self.start
+        self.shape = (len(normalized) * self.per_station, LENGTH, len(FEATURES))
+        self.dtype = normalized.dtype
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getitem__(self, indices):
+        if isinstance(indices, slice):
+            indices = np.arange(len(self))[indices]
+        indices = np.asarray(indices)
+        scalar = indices.ndim == 0
+        indices = np.atleast_1d(indices)
+        if indices.dtype.kind not in "iu" or np.any(indices < 0) or np.any(indices >= len(self)):
+            raise IndexError("Ungueltiger globaler Sequenzindex.")
+        station = indices // self.per_station
+        last = self.start + indices % self.per_station
+        times = last[:, None] - LENGTH + np.arange(LENGTH)[None, :]
+        values = self.normalized[station[:, None], times, :len(FEATURES)]
+        return values[0] if scalar else values
+
+def split_arrays(data, split):
+    start, stop = SPLITS[split]
+    return LazyWindowArray(data["normalized"], split), data["normalized"][:, start:stop, 15].reshape(-1)
+
+def inverse_predictions(normalized_predictions, data, split):
+    """Preserve original sklearn inverse_transform dtype/rounding per station."""
+    count = SPLITS[split][1] - SPLITS[split][0]
+    values = np.asarray(normalized_predictions)
+    if values.shape not in [(len(data["ids"]) * count,), (len(data["ids"]) * count, 1)]:
+        raise ValueError("Vorhersageform stimmt nicht mit der Messstellenzuordnung ueberein.")
+    values = values.reshape(len(data["ids"]), count)
+    result = np.empty(values.shape, dtype=np.float64)
+    for index, scaler in enumerate(data["scalers_y"]):
+        result[index] = scaler.inverse_transform(values[index, :, None])[:, 0]
+    if not np.isfinite(result).all():
+        raise ValueError("Nichtendliche ruecktransformierte Vorhersagen.")
+    return result
+
+def prepare_global(dynamic, static_path=None):
+    files = sorted(Path(dynamic).glob("MW_*.csv"), key=lambda p: p.name)
+    if not files:
+        raise ValueError("No MW_*.csv inputs found")
+    data = {"ids": [p.stem for p in files], "normalized": [], "scalers_y": []}
+    for index, path in enumerate(files):
+        frame, _ = load_station(path)
+        normalized, scaler = standardize_station(frame)
+        data["normalized"].append(normalized)
+        data["scalers_y"].append(scaler)
+        if (index+1) % 500 == 0:
+            print(f"Prepared {index+1}/{len(files)} wells", flush=True)
+    data["normalized"] = np.asarray(data["normalized"], dtype=np.float64)
     
-    # inverse scaling
-    sim = []
-    for i in range(len(dt_list_names)):
-        temp = sim_n[IDlen == i,0]
-        temp = temp.reshape(-1,1)
-        temp = scalers_y[i].inverse_transform(temp)
-        temp = temp.reshape(-1,)
-        temp = pd.DataFrame({"ID": np.repeat(i,len(temp)), "sim": temp})
-        sim.append(temp)
-    del temp
-    sim = pd.concat(sim)
-    
-    
-    
-    #% Evaluate Model
-    
-    # Minimum val MSE
-    MSEvalmin = np.min(model_history.history['val_loss'])
-    
-    results = []
-    for i in range(len(dt_list_names)):
-        temp = sim[sim.ID == i]
-        temp.columns = (dt_list_names[i] + "_" + temp.columns).tolist()
-        Y_test = Y_test.reshape(-1,1)
-        temp[dt_list_names[i]+"_obs"] = scalers_y[i].inverse_transform(Y_test[IDlen == i])
-        temp = temp.reset_index(drop = True)
-        results.append(temp)
-    del temp
-    results = pd.concat(results, axis = 1)
-    
-    sim_test = results.filter(like = "sim")
-    sim_test.columns = np.arange(0,len(dt_list_names))
-    obs_test = results.filter(like = "obs")
-    obs_test.columns = np.arange(0,len(dt_list_names))
-    
-    err_test = sim_test-obs_test
-    err_nash = obs_test - np.mean(datafullwide[datafullwide.index < date_start_test], 
-                                    axis = 0).values.reshape(-1,len(sim_test.columns))
-    
-    MSE_test =  np.mean((err_test) ** 2, axis = 0)
-    RMSE_test = np.sqrt(np.mean((sim_test-obs_test) ** 2, axis = 0))
-    
-    if((sum(sim_test.isnull().any()) > 0)):
-        rr_test = np.nan
-    if((sum(sim_test.isnull().any()) == 0)):
-        rr_test = np.zeros(len(sim_test.columns))
-        for i in range(len(sim_test.columns)):
-            rr_test[i] = stats.pearsonr(sim_test.iloc[:,i], obs_test.iloc[:,i])[0]
-        
-    NSE_test = 1 - ((np.sum(err_test ** 2, axis = 0)) / (np.sum((err_nash) ** 2, axis = 0)))
-    
-    Bias_test = np.mean(err_test, axis = 0)
-    
-    alpha_test = np.std(sim_test, axis = 0)/np.std(obs_test, axis = 0)
-    beta_test = np.mean(sim_test, axis = 0)/np.mean(obs_test, axis = 0)
-    KGE_test = 1-np.sqrt((rr_test-1)**2+(alpha_test-1)**2+(beta_test-1)**2)
-    
-    # concat scores
-    scores = pd.DataFrame([NSE_test, KGE_test, rr_test**2, Bias_test, MSE_test, RMSE_test]).transpose()
-    scores.index = dt_list_names
-    scores.columns = ['NSE','KGE','R2','Bias','MSE','RMSE']
-    
-    
-    #% Export results
-     
-    # train history
-    pd.DataFrame(model_history.history).to_csv(pth_out_i+'/losshistory.csv', float_format='%.4f', sep = ";")
-    
-    # scores
-    scores.to_csv(pth_out_i+'/scores.csv', float_format='%.4f', sep = ";")
-    
-    # export obs+sim data of test period
-    results.to_csv(pth_out_i+'/results.csv', float_format='%.4f', sep = ";")
-    
- 
+    return data
+
+def fit_member(data, seed_row, checkpoint):
+    tf.keras.backend.clear_session()
+    gc.collect()
+    tf.keras.utils.set_random_seed(seed_row["actual_seed"])
+    train_x, train_y = split_arrays(data, "train")
+    val_x, val_y = split_arrays(data, "validation")
+    model = build_model(train_x)
+    train_generator = DataGenerator(train_x, [], train_y, 512, shuffle=True)
+    val_generator = DataGenerator(val_x, [], val_y, 512, shuffle=False)
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(monitor="val_loss", mode="min", verbose=1,
+            patience=5, restore_best_weights=True),
+        tf.keras.callbacks.ModelCheckpoint(filepath=str(checkpoint), monitor="val_loss", save_best_only=True),
+        CustomLearningRateScheduler(3, 20, target_lr=0.001), ClearMemory(),
+    ]
+    history = model.fit(train_generator, validation_data=val_generator,
+        epochs=20, verbose=2, callbacks=callbacks, shuffle=True,
+        workers=1, use_multiprocessing=False, max_queue_size=10)
+    del model
+    gc.collect()
+    # As in the original global code, predict with the saved best-val checkpoint.
+    model = tf.keras.models.load_model(str(checkpoint))
+    predictions = []
+    for split in ["validation", "test"]:
+        x, y = split_arrays(data, split)
+        inference = DataGenerator(x, [], y, 32, shuffle=False)
+        normalized = model.predict(inference, verbose=0,
+            workers=1, use_multiprocessing=False, max_queue_size=10)
+        predictions.append(inverse_predictions(normalized, data, split))
+    result = np.concatenate(predictions, axis=1)
+    del model, history
+    tf.keras.backend.clear_session()
+    gc.collect()
+    return result
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dynamic", type=Path, default=Path("data/dynamic"))
+    parser.add_argument("--output", type=Path, default=Path("results_dynonly"))
+    parser.add_argument("--members", type=int, default=20)
+    parser.add_argument("--master-seed", type=int, default=DEFAULT_MASTER_SEED)
+    args = parser.parse_args()
+    seeds = seed_records(args.members, args.master_seed)
+    if args.output.exists():
+        parser.error("Use a new output directory; every invocation computes a complete ensemble")
+    configure_runtime()
+    data = prepare_global(args.dynamic)
+    args.output.mkdir(parents=True)
+    pd.DataFrame(seeds).to_csv(args.output / "seeds.csv", index=False)
+    arrays = []
+    for seed_row in seeds:
+        folder = args.output / "members" / f"member_{seed_row['member']:04d}"
+        folder.mkdir(parents=True)
+        values = fit_member(data, seed_row, folder / "model.h5")
+        np.save(folder / "predictions.npy", values, allow_pickle=False)
+        arrays.append(values)
+        print(f"Global member {seed_row['member']}/{args.members} complete", flush=True)
+    positions = {identifier: index for index, identifier in enumerate(data["ids"])}
+    def matrices(identifier):
+        return np.column_stack([a[positions[identifier], 261:] for a in arrays])
+    ensemble = args.output / f"ensemble_{args.members:03d}"
+    ensemble.mkdir()
+    export_medians(ensemble, "dynonly_median", data["ids"], matrices)
+
+if __name__ == "__main__":
+    main()
