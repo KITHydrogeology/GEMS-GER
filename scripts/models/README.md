@@ -33,7 +33,6 @@ Model architectures, hyperparameters, split dates and scaling periods are retain
 
 - All three models use the same 20-member seed policy. Python, NumPy and TensorFlow random generators are seeded, deterministic operations are enabled, and the session is reset before each member.
 - Input filenames have a fixed order. Global dynamic windows and repeated static features are created on demand to reduce memory use; their values and temporal alignment follow the original sequence construction.
-- Input columns, dates and finite values are checked. The excluded `Pumping` column may be absent from the static input.
 - Predictions are inverse-transformed per well and exported without the global scripts' former four-decimal rounding. The median is formed at each test week before score calculation.
 
 The model scripts save member predictions and the median exports. `evaluation.py` reproduces the four benchmark metrics; the former plotting and GIS sections are omitted. The scripts contain no file-hash registry, run-lock class or cache/resume framework. SHA-256 is used only by the shared seed policy to derive reproducible seeds.
